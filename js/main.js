@@ -47,7 +47,9 @@ function createGuitarNeck() {
         }
         neck.push(stringNotes);
     }
-    return neck.reverse(); // Reverse to have low E string (6th) at index 0
+    // GUITAR_TUNING is already ordered low E -> high E (string 6 to string 1),
+    // so neck[0] is already the low E string - no reverse needed.
+    return neck;
 }
 
 const guitarNeck = createGuitarNeck();
@@ -239,10 +241,15 @@ class GuitarSVGRenderer {
         
         svg.setAttribute("width", cfg.width);
         svg.setAttribute("height", totalHeight);
-        
-        this.drawFrets(svg, cfg, fretCount, placementFret, labelingInfo, topPadding + circlePadding);
+
+        // A fingering that includes a real open string (not muted) is an open-position
+        // chord, even if its lowest fretted note is fret 1+ - don't label it with a
+        // fret number, since that would misleadingly imply a movable/barred shape.
+        const hasOpenString = marks.some(([, fret, label]) => fret === 0 && label.trim().toLowerCase() !== 'x');
+
+        this.drawFrets(svg, cfg, fretCount, placementFret, labelingInfo, topPadding + circlePadding, hasOpenString);
         this.drawStrings(svg, cfg, fretCount, topPadding + circlePadding);
-        this.drawMarks(svg, cfg, marks, title, diagramType, topPadding + circlePadding);
+        this.drawMarks(svg, cfg, marks, title, diagramType, placementFret, topPadding + circlePadding);
         this.drawTitle(svg, cfg, chordIndex, templateId, diagramType, placementFret, fretCount, topPadding + circlePadding);
         
         if (true) { // Always show debug info
@@ -252,7 +259,7 @@ class GuitarSVGRenderer {
         return svg;
     }
     
-    drawFrets(svg, cfg, fretCount, fretStart, labelingInfo, topPadding = 0) {
+    drawFrets(svg, cfg, fretCount, fretStart, labelingInfo, topPadding = 0, hasOpenString = false) {
         for (let i = 0; i <= fretCount; i++) {
             const y = topPadding + cfg.margin + i * cfg.fretSpacing;
             const line = document.createElementNS(this.svgNS, "line");
@@ -263,12 +270,12 @@ class GuitarSVGRenderer {
             line.setAttribute("stroke", cfg.colors.fretLine);
             line.setAttribute("stroke-width", "2");
             svg.appendChild(line);
-            
-            this.drawFretLabel(svg, cfg, i, y, fretStart, labelingInfo);
+
+            this.drawFretLabel(svg, cfg, i, y, fretStart, labelingInfo, hasOpenString);
         }
     }
-    
-    drawFretLabel(svg, cfg, fretIndex, yPos, fretStart, labelingInfo) {
+
+    drawFretLabel(svg, cfg, fretIndex, yPos, fretStart, labelingInfo, hasOpenString = false) {
         if (labelingInfo && !labelingInfo.isOpenChord) {
             if (fretIndex === labelingInfo.labelPosition.diagramRow - 1) {
                 const text = document.createElementNS(this.svgNS, "text");
@@ -278,10 +285,10 @@ class GuitarSVGRenderer {
                 text.textContent = labelingInfo.labelFret;
                 svg.appendChild(text);
             }
-        } else if (fretIndex === 0 && fretStart > 0 && !labelingInfo) {
+        } else if (fretIndex === 0 && fretStart > 0 && !labelingInfo && !hasOpenString) {
             const text = document.createElementNS(this.svgNS, "text");
             text.setAttribute("x", cfg.margin - 20);
-            text.setAttribute("y", cfg.margin + 15);
+            text.setAttribute("y", yPos + 15);
             text.setAttribute("font-size", cfg.fontSize.fretNumber);
             text.textContent = fretStart.toString().padEnd(3, ' ');
             svg.appendChild(text);
@@ -302,7 +309,7 @@ class GuitarSVGRenderer {
         }
     }
     
-    drawMarks(svg, cfg, marks, title, diagramType, topPadding = 0) {
+    drawMarks(svg, cfg, marks, title, diagramType, placementFret, topPadding = 0) {
         if (!Array.isArray(marks)) {
             console.error('Invalid marks array:', marks);
             return;
@@ -310,18 +317,18 @@ class GuitarSVGRenderer {
         marks.forEach(([string, fret, olabel]) => {
             const label = olabel.trim();
             if (!Number.isInteger(string) || !Number.isInteger(fret) || typeof label !== 'string') return;
-            this.drawSingleMark(svg, cfg, string, fret, label, title, topPadding);
+            this.drawSingleMark(svg, cfg, string, fret, label, title, placementFret, topPadding);
         });
     }
-    
-    drawSingleMark(svg, cfg, string, fret, label, title, topPadding = 0) {
+
+    drawSingleMark(svg, cfg, string, fret, label, title, placementFret, topPadding = 0) {
         const normalizedLabel = label.toLowerCase().trim();
         const openStringLabels = ["0", "o", "open"];
-        
+
         if (fret === 0 && (normalizedLabel === "x" || (openStringLabels.includes(normalizedLabel) && title.includes("Fingerings")))) {
             this.drawOpenStringMark(svg, cfg, string, normalizedLabel, title, topPadding);
         } else {
-            this.drawFrettedMark(svg, cfg, string, fret, label, title, topPadding);
+            this.drawFrettedMark(svg, cfg, string, fret, label, title, placementFret, topPadding);
         }
     }
     
@@ -336,9 +343,13 @@ class GuitarSVGRenderer {
         svg.appendChild(text);
     }
     
-    drawFrettedMark(svg, cfg, string, fret, label, title, topPadding = 0) {
+    drawFrettedMark(svg, cfg, string, fret, label, title, placementFret, topPadding = 0) {
         const x = cfg.margin + (string - 1) * cfg.stringSpacing;
-        const y = topPadding + cfg.margin + fret * cfg.fretSpacing - cfg.fretSpacing / 2;
+        // Position relative to the diagram's starting fret, not the note's absolute fret,
+        // so fingerings that don't start at fret 0/1 (e.g. wider Chord Span searches) line up
+        // with the fret-number label drawn by drawFretLabel.
+        const relFret = fret === 0 ? 0 : fret - placementFret + 1;
+        const y = topPadding + cfg.margin + relFret * cfg.fretSpacing - cfg.fretSpacing / 2;
         const isRoot = label.toLowerCase() === "r";
         const circle = document.createElementNS(this.svgNS, "circle");
         circle.setAttribute("cx", x);
